@@ -1,0 +1,19 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.tabSize": 2,
+  "editor.wordWrap": "on",
+  "editor.bracketPairColorization.enabled": true,
+  "editor.guides.bracketPairs": true,
+  "editor.quickSuggestions": { "strings": true },
+  "emmet.includeLanguages": { "javascript": "javascriptreact" },
+  "files.associations": { "*.jsx": "javascriptreact" },
+  "javascript.updateImportsOnFileMove.enabled": "always",
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.patterns": {
+    "*.jsx": "${capture}.css, ${capture}.test.jsx",
+    "package.json": "package-lock.json, .eslintrc*, .prettierrc*"
+  },
+  "workbench.colorTheme": "Default Dark Modern",
+  "terminal.integrated.defaultProfile.windows": "Git Bash"
+}

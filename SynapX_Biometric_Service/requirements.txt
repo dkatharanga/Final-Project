@@ -1,0 +1,15 @@
+# Core service
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+python-dotenv>=1.0
+
+# Face recognition
+insightface>=0.7.3
+onnxruntime>=1.17          # CPU. Swap for onnxruntime-gpu if you have CUDA.
+opencv-python-headless>=4.9
+numpy>=1.26
+
+# Fingerprint (optional — only needed with a ZKTeco desktop reader).
+# Requires the ZKFinger SDK installed on the machine. Comment out if unused.
+pyzkfp>=0.1.0

@@ -1,0 +1,373 @@
+// prisma/schema.prisma
+// SynapX GymOS — PostgreSQL Database Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────
+
+enum PlanTier {
+  STARTER
+  PRO
+  ELITE
+  ENTERPRISE
+}
+
+enum MemberStatus {
+  ACTIVE
+  FROZEN
+  SUSPENDED
+  EXPIRED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+  REFUNDED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  ONLINE
+  BANK_TRANSFER
+}
+
+enum StaffRole {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  TRAINER
+  RECEPTIONIST
+  READ_ONLY
+}
+
+enum BookingStatus {
+  CONFIRMED
+  WAITLIST
+  CANCELLED
+  ATTENDED
+  NO_SHOW
+}
+
+enum EquipmentStatus {
+  ACTIVE
+  MAINTENANCE
+  BROKEN
+  RETIRED
+}
+
+// ─── TENANT (GYM) ─────────────────────────────────────────────────
+
+model Tenant {
+  id          String    @id @default(uuid())
+  name        String
+  subdomain   String    @unique
+  planTier    PlanTier  @default(STARTER)
+  status      String    @default("active")
+  phone       String?
+  email       String?
+  address     String?
+  logoUrl     String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  branches    Branch[]
+  staff       Staff[]
+  plans       MembershipPlan[]
+
+  @@map("tenants")
+}
+
+// ─── BRANCH ───────────────────────────────────────────────────────
+
+model Branch {
+  id        String  @id @default(uuid())
+  tenantId  String
+  name      String
+  address   String
+  phone     String?
+  timezone  String  @default("Asia/Colombo")
+  status    String  @default("active")
+  createdAt DateTime @default(now())
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  members   Member[]
+  staff     Staff[]
+  classes   Class[]
+  equipment Equipment[]
+  lockers   Locker[]
+
+  @@map("branches")
+}
+
+// ─── MEMBER ───────────────────────────────────────────────────────
+
+model Member {
+  id              String       @id @default(uuid())
+  branchId        String
+  memberCode      String       @unique
+  fullName        String
+  email           String?      @unique
+  phone           String?
+  dob             DateTime?
+  gender          String?
+  photoUrl        String?
+  address         String?
+  emergencyName   String?
+  emergencyPhone  String?
+  healthNotes     String?
+  fitnessGoals    String?
+  status          MemberStatus @default(ACTIVE)
+  referrerId      String?
+  loyaltyPoints   Int          @default(0)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  branch          Branch         @relation(fields: [branchId], references: [id])
+  memberships     Membership[]
+  biometric       BiometricProfile?
+  payments        Payment[]
+  bookings        Booking[]
+  locker          Locker?
+
+  @@map("members")
+}
+
+// ─── MEMBERSHIP PLAN ──────────────────────────────────────────────
+
+model MembershipPlan {
+  id           String   @id @default(uuid())
+  tenantId     String
+  name         String
+  durationDays Int
+  price        Decimal  @db.Decimal(10, 2)
+  currency     String   @default("USD")
+  description  String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id])
+  memberships  Membership[]
+
+  @@map("membership_plans")
+}
+
+// ─── MEMBERSHIP ───────────────────────────────────────────────────
+
+model Membership {
+  id          String       @id @default(uuid())
+  memberId    String
+  planId      String
+  startDate   DateTime
+  endDate     DateTime
+  status      MemberStatus @default(ACTIVE)
+  autoRenew   Boolean      @default(false)
+  frozenUntil DateTime?
+  notes       String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  member      Member         @relation(fields: [memberId], references: [id])
+  plan        MembershipPlan @relation(fields: [planId], references: [id])
+  payments    Payment[]
+
+  @@map("memberships")
+}
+
+// ─── BIOMETRIC PROFILE ────────────────────────────────────────────
+
+model BiometricProfile {
+  id              String    @id @default(uuid())
+  memberId        String    @unique
+  faceEnrolled    Boolean   @default(false)
+  fpEnrolled      Boolean   @default(false)
+  faceEmbedding   Bytes?
+  fpTemplate1     Bytes?
+  fpTemplate2     Bytes?
+  enrolledAt      DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  member          Member @relation(fields: [memberId], references: [id])
+
+  @@map("biometric_profiles")
+}
+
+// ─── STAFF ────────────────────────────────────────────────────────
+
+model Staff {
+  id             String    @id @default(uuid())
+  tenantId       String
+  branchId       String?
+  fullName       String
+  email          String    @unique
+  phone          String?
+  hashedPassword String
+  role           StaffRole @default(RECEPTIONIST)
+  isActive       Boolean   @default(true)
+  lastLogin      DateTime?
+  createdAt      DateTime  @default(now())
+
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
+  branch         Branch?   @relation(fields: [branchId], references: [id])
+  trainerProfile Trainer?
+
+  @@map("staff")
+}
+
+// ─── TRAINER ──────────────────────────────────────────────────────
+
+model Trainer {
+  id              String   @id @default(uuid())
+  staffId         String   @unique
+  specializations String[]
+  bio             String?
+  certifications  String[]
+  ratingAvg       Decimal  @default(0) @db.Decimal(3, 2)
+  totalSessions   Int      @default(0)
+
+  staff   Staff   @relation(fields: [staffId], references: [id])
+  classes Class[]
+
+  @@map("trainers")
+}
+
+// ─── CLASS ────────────────────────────────────────────────────────
+
+model Class {
+  id          String   @id @default(uuid())
+  branchId    String
+  trainerId   String?
+  name        String
+  type        String
+  description String?
+  capacity    Int
+  durationMin Int
+  startTime   String
+  recurrence  String?
+  color       String   @default("#00C2FF")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  branch    Branch    @relation(fields: [branchId], references: [id])
+  trainer   Trainer?  @relation(fields: [trainerId], references: [id])
+  bookings  Booking[]
+
+  @@map("classes")
+}
+
+// ─── BOOKING ──────────────────────────────────────────────────────
+
+model Booking {
+  id           String        @id @default(uuid())
+  classId      String
+  memberId     String
+  scheduledAt  DateTime
+  status       BookingStatus @default(CONFIRMED)
+  bookedAt     DateTime      @default(now())
+  checkedInAt  DateTime?
+  cancelledAt  DateTime?
+
+  class  Class  @relation(fields: [classId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@unique([classId, memberId, scheduledAt])
+  @@map("bookings")
+}
+
+// ─── PAYMENT ──────────────────────────────────────────────────────
+
+model Payment {
+  id           String        @id @default(uuid())
+  memberId     String
+  membershipId String?
+  invoiceNo    String        @unique
+  amount       Decimal       @db.Decimal(10, 2)
+  currency     String        @default("USD")
+  method       PaymentMethod @default(CASH)
+  status       PaymentStatus @default(PENDING)
+  gatewayRef   String?
+  invoiceUrl   String?
+  notes        String?
+  paidAt       DateTime?
+  dueDate      DateTime?
+  createdAt    DateTime      @default(now())
+
+  member     Member      @relation(fields: [memberId], references: [id])
+  membership Membership? @relation(fields: [membershipId], references: [id])
+
+  @@map("payments")
+}
+
+// ─── EQUIPMENT ────────────────────────────────────────────────────
+
+model Equipment {
+  id              String          @id @default(uuid())
+  branchId        String
+  name            String
+  model           String?
+  serialNumber    String?
+  purchaseDate    DateTime?
+  purchaseCost    Decimal?        @db.Decimal(10, 2)
+  location        String?
+  status          EquipmentStatus @default(ACTIVE)
+  lastMaintenance DateTime?
+  nextMaintenance DateTime?
+  notes           String?
+  createdAt       DateTime        @default(now())
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@map("equipment")
+}
+
+// ─── LOCKER ───────────────────────────────────────────────────────
+
+model Locker {
+  id           String    @id @default(uuid())
+  branchId     String
+  lockerNumber String
+  memberId     String?   @unique
+  monthlyFee   Decimal?  @db.Decimal(10, 2)
+  assignedFrom DateTime?
+  notes        String?
+
+  branch Branch  @relation(fields: [branchId], references: [id])
+  member Member? @relation(fields: [memberId], references: [id])
+
+  @@unique([branchId, lockerNumber])
+  @@map("lockers")
+}
+
+// ─── ATTENDANCE LOG ───────────────────────────────────────────────
+// Kiosk check-ins (QR / Face / Fingerprint / Manual). Stored in Postgres so
+// attendance works without MongoDB.
+
+model AttendanceLog {
+  id         String   @id @default(uuid())
+  branchId   String
+  tenantId   String?
+  memberId   String?
+  memberName String?
+  memberCode String?
+  method     String   @default("QR")      // FACE | FINGERPRINT | QR | RFID | MANUAL
+  result     String   @default("GRANTED")  // GRANTED | DENIED | FROZEN | EXPIRED
+  confidence Float?
+  deviceId   String?
+  ipAddress  String?
+  note       String?
+  checkedAt  DateTime @default(now())
+
+  @@index([branchId, checkedAt])
+  @@index([memberId, checkedAt])
+  @@map("attendance_logs")
+}
