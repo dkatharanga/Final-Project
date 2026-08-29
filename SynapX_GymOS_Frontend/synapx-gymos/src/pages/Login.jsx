@@ -67,7 +67,7 @@ export default function LoginPage({ t, onLogin }) {
             The operating system for modern gyms.
           </div>
           <p style={{ fontSize: 15, lineHeight: 1.6, marginTop: 18, opacity: 0.92, maxWidth: 400 }}>
-            Members, attendance, classes, payments and biometric check-in — managed from one clean console.
+            Members, attendance, classes, payments and biometric check-in, managed from one clean console.
           </p>
           <div style={{ display: 'flex', gap: 26, marginTop: 34 }}>
             {[['850+', 'Members'], ['2', 'Branches'], ['99.9%', 'Uptime']].map(([n, l]) => (

@@ -31,12 +31,18 @@ export const biometricService = {
   // SUPER_ADMIN only (enforced server-side). Backend forwards captures to the
   // biometric microservice and stores the returned embedding/template bytes.
   enrollFace:   (memberId, image)   => api.post(`/biometric/${memberId}/enroll`, { type: 'face', faceImage: image }),
+  // Legacy ZKTeco desk-reader path (bridge captures from its own attached reader).
   enrollFinger: (memberId)          => api.post(`/biometric/${memberId}/enroll`, { type: 'fingerprint' }),
+  // Fingerprint via THIS device's own sensor (WebAuthn platform authenticator —
+  // Windows Hello / an ASUS laptop's built-in reader / Touch ID).
+  fingerprintOptions: (memberId)                       => api.get(`/biometric/${memberId}/fingerprint/options`),
+  fingerprintVerify:  (memberId, attestationResponse)  => api.post(`/biometric/${memberId}/fingerprint/verify`, { attestationResponse }),
   remove:       (memberId, type)    => api.delete(`/biometric/${memberId}${type ? `?type=${type}` : ''}`),
 }
 
 export const attendanceService = {
   checkIn:    (body)   => api.post('/attendance/checkin', body),
+  fingerprintOptions: () => api.get('/attendance/checkin/fingerprint-options'),
   list:       (params) => api.get('/attendance',          params),
   todayStats: (params) => api.get('/attendance/today',    params),
   heatmap:    (params) => api.get('/attendance/heatmap',  params),

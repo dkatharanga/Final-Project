@@ -4,7 +4,8 @@
 const { prisma }      = require('../config/prisma')
 const { ok, created } = require('../utils/response')
 const { getPagination, buildMeta } = require('../utils/pagination')
-const bio   = require('../services/biometricService')
+const bio      = require('../services/biometricService')
+const webauthn = require('../services/webauthnService')
 const dayjs = require('dayjs')
 
 const MEMBER_INCLUDE = {
@@ -28,11 +29,18 @@ const branchWhere = (req) => {
   return bId ? { branchId: bId } : {}
 }
 
+// ─── FINGERPRINT CHECK-IN OPTIONS (kiosk asks "who's touching the sensor?") ──
+exports.fingerprintOptions = async (req, res) => {
+  const { requestId, options } = await webauthn.authenticationOptions()
+  return ok(res, { requestId, options })
+}
+
 // ─── CHECK-IN (kiosk posts here — one pipeline for QR / Face / Fingerprint) ──
 exports.checkIn = async (req, res) => {
   const {
     memberId, memberCode, method = 'QR',
     confidence, deviceId, note, faceImage, fpTemplate,
+    requestId, assertionResponse,
   } = req.body
 
   // 1) IDENTIFY — differs per method, converges on a single `member`
@@ -45,7 +53,15 @@ exports.checkIn = async (req, res) => {
       member = await prisma.member.findUnique({ where: { id: matchInfo.memberId }, include: MEMBER_INCLUDE })
     }
   }
-  if (!member && method === 'FINGERPRINT' && fpTemplate) {
+  // Fingerprint via this device's own sensor (WebAuthn) — the normal path now.
+  if (!member && method === 'FINGERPRINT' && requestId && assertionResponse) {
+    const r = await webauthn.verifyAuthentication(requestId, assertionResponse)
+    matchInfo = r.ok ? { matched: true, memberId: r.memberId } : { matched: false, reason: r.reason }
+    if (matchInfo.matched) {
+      member = await prisma.member.findUnique({ where: { id: matchInfo.memberId }, include: MEMBER_INCLUDE })
+    }
+  // Legacy path: external ZKTeco desk reader bridge, if one is ever connected.
+  } else if (!member && method === 'FINGERPRINT' && fpTemplate) {
     matchInfo = await bio.matchFingerprint(fpTemplate)
     if (matchInfo.matched) {
       member = await prisma.member.findUnique({ where: { id: matchInfo.memberId }, include: MEMBER_INCLUDE })

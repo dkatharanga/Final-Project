@@ -28,7 +28,7 @@ export default function PaymentsPage({ t, user }) {
   )
   const { mutate: markPaid, loading: paying } = useMutation((id) => paymentService.markPaid(id, { method: 'CASH' }))
   const { add: notify, refreshAlerts } = useNotifications()
-  const { fmt } = useCurrency()
+  const { fmt, currency } = useCurrency()
   const { gymName, logo } = useGymProfile()
 
   const totalPaid    = items.filter(p => p.status === 'PAID').reduce((s, p) => s + Number(p.amount), 0)
@@ -36,7 +36,7 @@ export default function PaymentsPage({ t, user }) {
   const totalOverdue = items.filter(p => p.status === 'OVERDUE').reduce((s, p) => s + Number(p.amount), 0)
 
   const openInvoice = (p) => {
-    printInvoice({ payment: p, gymName, logo })
+    printInvoice({ payment: p, gymName, logo, currency })
   }
 
   const handleExportPdf = () => printTableReport({

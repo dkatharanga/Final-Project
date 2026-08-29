@@ -3,7 +3,8 @@ const router = require('express').Router()
 const ctrl   = require('../controllers/attendanceController')
 const { protect } = require('../middleware/auth')
 
-// Public endpoint for kiosk (uses device key in production)
+// Public endpoints for kiosk (uses device key in production)
+router.get('/checkin/fingerprint-options', ctrl.fingerprintOptions)
 router.post('/checkin', ctrl.checkIn)
 
 router.use(protect)

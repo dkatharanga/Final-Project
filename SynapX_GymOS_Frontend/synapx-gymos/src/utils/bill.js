@@ -26,9 +26,11 @@ const openPrintWindow = (html) => {
 // ── PAYMENT INVOICE ──────────────────────────────────────────────
 // Printable invoice for a single payment: gym logo + name on top, transaction
 // details, then SynapX Tec company details at the bottom.
-export function printInvoice({ payment, gymName = 'SynapX GymOS', logo = '' }) {
+export function printInvoice({ payment, gymName = 'SynapX GymOS', logo = '', currency }) {
   const amount = Number(payment?.amount || 0).toFixed(2)
-  const cur    = payment?.currency || 'USD'
+  // Prefer the live Settings → General currency (matches every other screen);
+  // fall back to what was recorded on the payment if the caller doesn't pass one.
+  const cur    = currency || payment?.currency || 'USD'
   const status = payment?.status || 'PAID'
   const when   = new Date(payment?.createdAt || Date.now()).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
   const member = payment?.member || {}
@@ -98,10 +100,10 @@ export function printInvoice({ payment, gymName = 'SynapX GymOS', logo = '' }) {
   return openPrintWindow(html)
 }
 
-export function printBill({ member, payment, gym = 'SynapX GymOS', logo = '' }) {
+export function printBill({ member, payment, gym = 'SynapX GymOS', logo = '', currency }) {
   const code   = member?.memberCode || ''
   const amount = Number(payment?.amount || 0).toFixed(2)
-  const cur    = payment?.currency || 'USD'
+  const cur    = currency || payment?.currency || 'USD'
   const when   = new Date(payment?.createdAt || Date.now()).toLocaleString('en-US', {
     dateStyle: 'medium', timeStyle: 'short',
   })

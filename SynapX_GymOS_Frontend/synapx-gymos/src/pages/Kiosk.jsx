@@ -4,6 +4,7 @@
 // QR (jsQR), and Manual code entry — all POST /attendance/checkin.
 import { useState, useEffect, useRef, useCallback } from 'react'
 import jsQR from 'jsqr'
+import { startAuthentication, platformAuthenticatorIsAvailable } from '@simplewebauthn/browser'
 import { Icon } from '../components/ui/index.jsx'
 import { attendanceService } from '../api/services'
 import { useGymProfile } from '../context/GymProfileContext.jsx'
@@ -27,7 +28,11 @@ const REASON_TEXT = {
   FACE_NOT_RECOGNISED:       'Face not recognised. Try again or use QR.',
   FP_SERVICE_NOT_CONFIGURED: 'Fingerprint scanner is not connected.',
   FP_SERVICE_UNAVAILABLE:    'Fingerprint scanner is offline.',
-  FP_NOT_RECOGNISED:         'Fingerprint not recognised.',
+  FP_NOT_RECOGNISED:         'Fingerprint not recognised. Not enrolled on this device, or try again.',
+  FP_CHALLENGE_EXPIRED:      'That took too long — try again.',
+  FP_VERIFICATION_FAILED:    'Fingerprint verification failed. Try again.',
+  NO_PLATFORM_AUTHENTICATOR: 'No fingerprint sensor / Windows Hello found on this device.',
+  FP_CANCELLED:              'Cancelled.',
   NETWORK_ERROR:             'Cannot reach the server. Check the connection.',
 }
 
@@ -57,6 +62,9 @@ export default function Kiosk({ onExit }) {
   const [clock, setClock]   = useState(fmtTime())
   const [camError, setCamError] = useState('')
   const [manualInput, setManualInput] = useState('')
+  const [fpAvailable, setFpAvailable] = useState(false)
+
+  useEffect(() => { platformAuthenticatorIsAvailable().then(setFpAvailable).catch(() => setFpAvailable(false)) }, [])
 
   const videoRef  = useRef(null)
   const canvasRef = useRef(null)
@@ -201,7 +209,48 @@ export default function Kiosk({ onExit }) {
     if (!img) { setCamError('Camera not ready.'); return }
     doCheckin({ method: 'FACE', faceImage: img })
   }
-  const scanFinger  = () => doCheckin({ method: 'FINGERPRINT' })
+  // Shows a DENIED result without a round trip — for failures that happen
+  // before we ever have something to send the server (cancelled prompt, no
+  // sensor on this device, etc.). Mirrors doCheckin's own result/log/timer handling.
+  const denyLocally = useCallback((reason, methodLabel) => {
+    const data = { result: 'DENIED', reason, member: null }
+    setResult(data)
+    setStatus('result')
+    addLog(data, methodLabel)
+    clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      setStatus('idle'); setResult(null); busyRef.current = false
+    }, RESULT_MS)
+  }, [addLog])
+
+  // Fingerprint via THIS device's own sensor (WebAuthn platform authenticator —
+  // Windows Hello / a laptop's built-in reader). No allowCredentials is sent,
+  // so the OS shows a picker of every enrolled member on this device and the
+  // touch itself both identifies and verifies them.
+  const scanFinger = useCallback(async () => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setStatus('scanning')
+    try {
+      const available = await platformAuthenticatorIsAvailable()
+      if (!available) throw new Error('NO_PLATFORM_AUTHENTICATOR')
+
+      const optsRes = await attendanceService.fingerprintOptions()
+      const { requestId, options } = optsRes?.data ?? optsRes
+
+      let assertionResponse
+      try {
+        assertionResponse = await startAuthentication({ optionsJSON: options })
+      } catch (err) {
+        throw new Error(err?.name === 'NotAllowedError' ? 'FP_CANCELLED' : 'FP_VERIFICATION_FAILED')
+      }
+
+      busyRef.current = false   // hand off to doCheckin, which owns busy/scanning from here
+      doCheckin({ method: 'FINGERPRINT', requestId, assertionResponse })
+    } catch (err) {
+      denyLocally(err.message || 'FP_VERIFICATION_FAILED', 'FINGERPRINT')
+    }
+  }, [doCheckin, denyLocally])
   const submitManual = (e) => {
     e.preventDefault()
     if (!manualInput.trim()) return
@@ -399,7 +448,7 @@ export default function Kiosk({ onExit }) {
           {[
             { l: 'Camera',      ok: camActive && !camError },
             { l: 'QR scanner',  ok: true },
-            { l: 'Fingerprint', ok: false },
+            { l: 'Fingerprint', ok: fpAvailable },
             { l: 'Network',     ok: true },
           ].map(s => (
             <div key={s.l} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

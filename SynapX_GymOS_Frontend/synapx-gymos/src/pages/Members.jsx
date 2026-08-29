@@ -1,5 +1,6 @@
 // src/pages/Members.jsx — Complete Fixed Version
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { startRegistration, platformAuthenticatorIsAvailable } from '@simplewebauthn/browser'
 import { memberService, biometricService } from '../api/services'
 import { qrMatrix, qrPngDataUrl } from '../utils/qr'
 import { printBill } from '../utils/bill'
@@ -10,6 +11,38 @@ import { Card, Btn, Avatar, Icon } from '../components/ui/index.jsx'
 import { useNotifications } from '../context/NotificationContext.jsx'
 
 const AV_COLORS = ['#E11D2E','#3F4350','#9B1C2E','#6B7280','#C4142B']
+
+// ── FINGERPRINT VIA THIS DEVICE'S SENSOR (WebAuthn) ────────────────
+// Runs the registration ceremony against Windows Hello / the laptop's built-in
+// fingerprint reader and posts the result back for verification+storage.
+// Throws with a short code the UI maps to a friendly message.
+async function enrollFingerprintOnThisDevice(memberId) {
+  const available = await platformAuthenticatorIsAvailable()
+  if (!available) throw new Error('NO_PLATFORM_AUTHENTICATOR')
+
+  const optsRes = await biometricService.fingerprintOptions(memberId)
+  const options = optsRes?.data ?? optsRes
+  let attestationResponse
+  try {
+    attestationResponse = await startRegistration({ optionsJSON: options })
+  } catch (err) {
+    if (err.name === 'NotAllowedError') throw new Error('FP_CANCELLED')
+    if (err.name === 'InvalidStateError') throw new Error('FP_ALREADY_REGISTERED')
+    throw err
+  }
+  return biometricService.fingerprintVerify(memberId, attestationResponse)
+}
+
+function friendlyFpError(err) {
+  if (err.status === 403) return 'Only a super admin can enroll biometrics.'
+  const m = err.message || ''
+  if (m === 'NO_PLATFORM_AUTHENTICATOR') return 'No fingerprint sensor / Windows Hello found on this device.'
+  if (m === 'FP_CANCELLED')              return 'Cancelled — the fingerprint prompt was dismissed.'
+  if (m === 'FP_ALREADY_REGISTERED')     return 'This finger is already enrolled for this member.'
+  if (m.includes('CHALLENGE_EXPIRED'))   return 'That took too long — try again.'
+  if (m.includes('VERIFICATION_FAILED')) return 'Fingerprint verification failed — try again.'
+  return m || 'Fingerprint enrollment failed.'
+}
 
 // ── STATUS BADGE ─────────────────────────────────────────────────
 function StatusBadge({ status, t }) {
@@ -80,6 +113,7 @@ function EnrollStep({ member, payment, t, onFinish }) {
   const [msg,     setMsg]     = useState(null)               // { ok: bool, text }
   const notify = useNotifications()
   const { gymName, logo } = useGymProfile()
+  const { currency } = useCurrency()
 
   const stopCamera = () => {
     if (streamRef.current) { streamRef.current.getTracks().forEach(tr => tr.stop()); streamRef.current = null }
@@ -144,11 +178,11 @@ function EnrollStep({ member, payment, t, onFinish }) {
   const doFinger = async () => {
     setBusy('fp'); setMsg(null)
     try {
-      const r = await biometricService.enrollFinger(member.id)
+      await enrollFingerprintOnThisDevice(member.id)
       setDone(d => ({ ...d, fp: true }))
-      setMsg({ ok: true, text: r?.data?.note || 'Fingerprint enrolled.' })
+      setMsg({ ok: true, text: 'Fingerprint enrolled on this device.' })
       notify.add({ type: 'member', title: 'Fingerprint enrolled', message: `Fingerprint saved for ${member.fullName}.` })
-    } catch (err) { setMsg({ ok: false, text: friendly(err) }) }
+    } catch (err) { setMsg({ ok: false, text: friendlyFpError(err) }) }
     finally { setBusy('') }
   }
 
@@ -209,7 +243,7 @@ function EnrollStep({ member, payment, t, onFinish }) {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" onClick={downloadQR} style={miniBtn}>⤓ Download QR</button>
             {payment && (
-              <button type="button" onClick={() => printBill({ member, payment, gym: gymName, logo })} style={miniBtn}>🖶 Print bill</button>
+              <button type="button" onClick={() => printBill({ member, payment, gym: gymName, logo, currency })} style={miniBtn}>🖶 Print bill</button>
             )}
           </div>
         </div>
@@ -256,7 +290,7 @@ function EnrollStep({ member, payment, t, onFinish }) {
               <div style={{ fontSize: 14, fontWeight: 800, color: t.text }}>Fingerprint</div>
               {done.fp && <Tick label="Enrolled" />}
             </div>
-            <div style={{ fontSize: 11.5, color: t.textSub, marginTop: 2 }}>Captured on the connected reader at the desk.</div>
+            <div style={{ fontSize: 11.5, color: t.textSub, marginTop: 2 }}>Uses this device's own fingerprint sensor (Windows Hello).</div>
           </div>
         </div>
         {!done.fp && (
@@ -691,8 +725,174 @@ function EditMemberModal({ t, member, onClose, onSaved }) {
   )
 }
 
+// ── BIOMETRIC PANEL (Member Detail Drawer) ─────────────────────────
+// Lets a super admin view + (re-)enroll a member's Face ID / Fingerprint
+// credentials any time — not just during the Add Member wizard.
+function BiometricPanel({ member, t, isSuperAdmin }) {
+  const videoRef  = useRef(null)
+  const canvasRef = useRef(null)
+  const streamRef = useRef(null)
+  const [status, setStatus] = useState(null)   // null while loading
+  const [camOn,  setCamOn]  = useState(false)
+  const [camError, setCamError] = useState('')
+  const [busy,   setBusy]   = useState('')     // 'face' | 'fp' | 'remove-face' | 'remove-fingerprint'
+  const [msg,    setMsg]    = useState(null)
+  const notify = useNotifications()
+
+  useEffect(() => {
+    let cancelled = false
+    biometricService.get(member.id)
+      .then(r => { if (!cancelled) setStatus({ faceEnrolled: !!r?.data?.faceEnrolled, fpEnrolled: !!r?.data?.fpEnrolled }) })
+      .catch(() => { if (!cancelled) setStatus({ faceEnrolled: false, fpEnrolled: false }) })
+    return () => { cancelled = true }
+  }, [member.id])
+
+  const stopCamera = () => {
+    if (streamRef.current) { streamRef.current.getTracks().forEach(tr => tr.stop()); streamRef.current = null }
+    if (videoRef.current) videoRef.current.srcObject = null
+    setCamOn(false)
+  }
+  const startCamera = async () => {
+    setCamError(''); setMsg(null)
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 360 } }, audio: false })
+      streamRef.current = s
+      setCamOn(true)
+    } catch (err) {
+      setCamError(err?.name === 'NotAllowedError' ? 'Camera permission denied — allow it in the browser.' : 'Camera unavailable on this device.')
+    }
+  }
+  useEffect(() => {
+    if (camOn && streamRef.current && videoRef.current) {
+      videoRef.current.srcObject = streamRef.current
+      videoRef.current.play().catch(() => {})
+    }
+  }, [camOn])
+  useEffect(() => () => stopCamera(), [])
+
+  const friendly = (err) => {
+    if (err.status === 403) return 'Only a super admin can manage biometrics.'
+    const m = err.message || ''
+    if (m.includes('NOT_CONFIGURED') || m.includes('UNAVAILABLE')) return 'Biometric service not connected.'
+    if (m.includes('FACE_ENROLL_FAILED')) return 'No face detected — move into frame and retake.'
+    if (m.includes('FP_ENROLL_FAILED'))   return 'Fingerprint scan failed — try again.'
+    return m || 'Request failed.'
+  }
+
+  const captureFrame = () => {
+    const v = videoRef.current, c = canvasRef.current
+    if (!v || !c || !v.videoWidth) return null
+    c.width = v.videoWidth; c.height = v.videoHeight
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height)
+    return c.toDataURL('image/jpeg', 0.7)
+  }
+
+  const doFace = async () => {
+    const img = captureFrame()
+    if (!img) { setMsg({ ok: false, text: camOn ? 'Camera still starting — try again.' : 'Start the camera first.' }); return }
+    setBusy('face'); setMsg(null)
+    try {
+      await biometricService.enrollFace(member.id, img)
+      setStatus(s => ({ ...s, faceEnrolled: true }))
+      setMsg({ ok: true, text: 'Face ID enrolled.' })
+      notify.add({ type: 'member', title: 'Face ID enrolled', message: `Face saved for ${member.fullName}.` })
+      stopCamera()
+    } catch (err) { setMsg({ ok: false, text: friendly(err) }) }
+    finally { setBusy('') }
+  }
+
+  const doFinger = async () => {
+    setBusy('fp'); setMsg(null)
+    try {
+      await enrollFingerprintOnThisDevice(member.id)
+      setStatus(s => ({ ...s, fpEnrolled: true }))
+      setMsg({ ok: true, text: 'Fingerprint enrolled on this device.' })
+      notify.add({ type: 'member', title: 'Fingerprint enrolled', message: `Fingerprint saved for ${member.fullName}.` })
+    } catch (err) { setMsg({ ok: false, text: friendlyFpError(err) }) }
+    finally { setBusy('') }
+  }
+
+  const doRemove = async (type) => {
+    setBusy(`remove-${type}`); setMsg(null)
+    try {
+      await biometricService.remove(member.id, type)
+      setStatus(s => ({ ...s, [type === 'face' ? 'faceEnrolled' : 'fpEnrolled']: false }))
+      setMsg({ ok: true, text: `${type === 'face' ? 'Face ID' : 'Fingerprint'} cleared.` })
+    } catch (err) { setMsg({ ok: false, text: friendly(err) }) }
+    finally { setBusy('') }
+  }
+
+  const row = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: `1px solid ${t.border}` }
+  const miniBtn = (danger) => ({
+    padding: '6px 11px', borderRadius: 7, border: `1px solid ${danger ? t.red + '44' : t.border}`,
+    background: danger ? t.redSoft : t.toggleBg, color: danger ? t.red : t.text,
+    fontSize: 11.5, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+  })
+
+  if (status === null) return <div style={{ fontSize: 12, color: t.textSub, padding: '8px 0' }}>Loading biometric status…</div>
+
+  return (
+    <div>
+      {msg && (
+        <div style={{ padding: '8px 12px', borderRadius: 8, fontSize: 11.5, marginBottom: 10, fontWeight: 600,
+          background: msg.ok ? t.greenSoft : t.redSoft, color: msg.ok ? t.green : t.red }}>
+          {msg.ok ? '✓ ' : '⚠ '}{msg.text}
+        </div>
+      )}
+
+      {/* Face */}
+      <div style={row}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icon name="scan" size={16} color={status.faceEnrolled ? t.green : t.textMuted} />
+          <span style={{ fontSize: 12.5, color: t.text, fontWeight: 600 }}>Face ID</span>
+          <span style={{ fontSize: 10.5, fontWeight: 700, color: status.faceEnrolled ? t.green : t.textMuted }}>
+            {status.faceEnrolled ? 'Enrolled' : 'Not enrolled'}
+          </span>
+        </div>
+        {isSuperAdmin && !camOn && (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button type="button" onClick={startCamera} style={miniBtn(false)}>{status.faceEnrolled ? 'Re-enroll' : 'Enroll'}</button>
+            {status.faceEnrolled && <button type="button" onClick={() => doRemove('face')} disabled={busy === 'remove-face'} style={miniBtn(true)}>Clear</button>}
+          </div>
+        )}
+      </div>
+      {isSuperAdmin && camOn && (
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 0', borderBottom: `1px solid ${t.border}` }}>
+          <div style={{ width: 120, height: 90, borderRadius: 8, overflow: 'hidden', background: '#000', flexShrink: 0 }}>
+            <video ref={videoRef} playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button type="button" onClick={doFace} disabled={busy === 'face'} style={miniBtn(false)}>{busy === 'face' ? 'Enrolling…' : 'Capture'}</button>
+            <button type="button" onClick={stopCamera} style={miniBtn(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {camError && <div style={{ fontSize: 11, color: t.red, margin: '2px 0 8px' }}>{camError}</div>}
+
+      {/* Fingerprint */}
+      <div style={{ ...row, borderBottom: 'none' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icon name="fingerprint" size={16} color={status.fpEnrolled ? t.green : t.textMuted} />
+          <span style={{ fontSize: 12.5, color: t.text, fontWeight: 600 }}>Fingerprint</span>
+          <span style={{ fontSize: 10.5, fontWeight: 700, color: status.fpEnrolled ? t.green : t.textMuted }}>
+            {status.fpEnrolled ? 'Enrolled' : 'Not enrolled'}
+          </span>
+        </div>
+        {isSuperAdmin && (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button type="button" onClick={doFinger} disabled={busy === 'fp'} style={miniBtn(false)}>{busy === 'fp' ? 'Scanning…' : (status.fpEnrolled ? 'Re-scan' : 'Scan')}</button>
+            {status.fpEnrolled && <button type="button" onClick={() => doRemove('fingerprint')} disabled={busy === 'remove-fingerprint'} style={miniBtn(true)}>Clear</button>}
+          </div>
+        )}
+      </div>
+
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
+    </div>
+  )
+}
+
 // ── MEMBER DETAIL DRAWER ─────────────────────────────────────────
-function MemberDrawer({ member, t, onClose, onDelete }) {
+function MemberDrawer({ member, t, onClose, onDelete, isSuperAdmin }) {
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex' }}>
       <div onClick={onClose} style={{ flex: 1, background: '#00000060' }} />
@@ -751,6 +951,10 @@ function MemberDrawer({ member, t, onClose, onDelete }) {
             <div style={{ fontSize: 12, color: t.orange, fontWeight: 600 }}>⚠ No active membership assigned</div>
           </div>
         )}
+
+        <div style={{ height: 1, background: t.border, margin: '22px 0 16px' }} />
+        <div style={{ fontSize: 10, color: t.textSub, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Biometrics & QR</div>
+        <BiometricPanel member={member} t={t} isSuperAdmin={isSuperAdmin} />
 
         {onDelete && (
           <>
@@ -885,6 +1089,7 @@ export default function MembersPage({ t, user }) {
   const [renewing, setRenewing] = useState(null)   // member pending renewal
   const notify = useNotifications()
   const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN'
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN'   // biometric enroll/clear is SUPER_ADMIN only server-side
 
   const {
     items, pagination, loading, error, refetch,
@@ -1068,7 +1273,7 @@ export default function MembersPage({ t, user }) {
       </Card>
 
       {/* Member Detail Drawer */}
-      {selected && <MemberDrawer member={selected} t={t} onClose={() => setSelected(null)} onDelete={isAdmin ? () => setDeleting(selected) : null} />}
+      {selected && <MemberDrawer member={selected} t={t} isSuperAdmin={isSuperAdmin} onClose={() => setSelected(null)} onDelete={isAdmin ? () => setDeleting(selected) : null} />}
 
       {/* Edit Member Modal */}
       {editing && (

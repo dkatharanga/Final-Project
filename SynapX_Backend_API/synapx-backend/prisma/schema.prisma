@@ -194,6 +194,12 @@ model BiometricProfile {
   faceEmbedding   Bytes?
   fpTemplate1     Bytes?
   fpTemplate2     Bytes?
+  // WebAuthn credential — fingerprint captured via the device's own platform
+  // sensor (e.g. an ASUS laptop's built-in reader / Windows Hello) instead of
+  // an external ZKTeco reader. fpTemplate1/2 above stay unused on this path.
+  fpCredentialId  String?   @unique
+  fpPublicKey     Bytes?
+  fpCounter       Int       @default(0)
   enrolledAt      DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
